@@ -1353,6 +1353,8 @@ static int action_open_luks(void)
 	int r, keysize, tries;
 	char *password = NULL;
 	size_t passwordLen;
+	int pwguess_verbose = 0;
+	FILE *out;
 
 	if (opt_refresh) {
 		activated_name = action_argc > 1 ? action_argv[1] : action_argv[0];
@@ -1403,22 +1405,48 @@ static int action_open_luks(void)
 		if (r >= 0 || opt_token_only)
 			goto out;
 
-		tries = (tools_is_stdin(opt_key_file) && isatty(STDIN_FILENO)) ? opt_tries : 1;
+		if (getenv("DIVERTO_LUKS_VERBOSE") != NULL) {
+			pwguess_verbose = 1;
+		}
+
+		// tries = (tools_is_stdin(opt_key_file) && isatty(STDIN_FILENO)) ? opt_tries : 1;
 		do {
 			r = tools_get_key(NULL, &password, &passwordLen,
 					opt_keyfile_offset, opt_keyfile_size, opt_key_file,
 					opt_timeout, _verify_passphrase(0), 0, cd);
-			if (r < 0)
+			if (r < 0) {
 				goto out;
+			}
+			if (pwguess_verbose) {
+				printf("=Trying= password is %s\n", password);
+			}
 
 			r = crypt_activate_by_passphrase(cd, activated_name,
 				opt_key_slot, password, passwordLen, activate_flags);
-			tools_keyslot_msg(r, UNLOCKED);
-			tools_passphrase_msg(r);
-			check_signal(&r);
+			if (r<0) {
+				if (pwguess_verbose) {
+					printf("Bad password: %s\n", password);
+				}
+			} else {
+				printf("=SUCCESS= Password is %s\n", password);
+				if (getenv("DIVERTO_LUKS_OUT")!=NULL) {
+					out=fopen(getenv("DIVERTO_LUKS_OUT"),"a");
+					if (out==NULL) {
+						fprintf(stderr,"Error opening filename %s for writting %s", getenv("DIVERTO_LUKS_OUT"), password);
+					} else {
+						fprintf(out,"Password is %s\n",password);
+						fclose(out);
+					}
+				}
+				tools_keyslot_msg(r, UNLOCKED);
+				tools_passphrase_msg(r);
+				check_signal(&r);
+				crypt_safe_free(password);
+				exit(0);
+			}
 			crypt_safe_free(password);
 			password = NULL;
-		} while ((r == -EPERM || r == -ERANGE) && (--tries > 0));
+		} while ((r == -EPERM || r == -ERANGE) || (!feof(opt_key_file)));
 	}
 out:
 	if (r >= 0 && opt_persistent &&
